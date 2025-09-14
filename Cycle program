@@ -1,0 +1,238 @@
+#include <ESP32Servo.h>
+
+// Pin definitions
+#define WATER_PUMP_1 14      // Water pump 1 (intake) connected to relay 1
+#define SERVO_1_PIN 15       // Servo 1 (coagulant dispenser)
+#define DC_MOTOR_PIN_1 16    // DC motor control pin 1 to motor driver
+#define DC_MOTOR_PIN_2 17    // DC motor control pin 2 to motor driver
+#define DC_MOTOR_ENA 5       // DC motor enable/PWM pin for speed control
+#define WATER_PUMP_2 21      // Water pump 2 (solar panel cleaning) connected to relay 2
+#define WATER_PUMP_3 27      // Water pump 3 (replacing servo 2 for faucet control)
+
+// Servo angle settings
+#define SERVO_1_CLOSED 50
+#define SERVO_1_OPEN 0
+
+// Timing constants (in milliseconds)
+#define WATER_INTAKE_TIME 5000       
+#define COAGULANT_DISPENSE_TIME 500 
+#define STIRRING_FAST_TIME 5000      
+#define STIRRING_SLOW_TIME 5000      
+#define SETTLING_TIME 5000           
+#define WATER_PUMP_3_ON_TIME 5000    
+#define WAITING_TIME 5000            
+#define SOLAR_PANEL_CLEANING_TIME 5000 
+#define CYCLE_WAIT_TIME 10000        
+
+// Motor speed settings
+#define FAST_SPEED 255
+#define SLOW_SPEED 100
+
+// Create servo object
+Servo servo1;
+
+// State machine variables
+enum SystemState {
+  IDLE,
+  INTAKE_WATER,
+  DISPENSE_COAGULANT,
+  STIRRING_FAST,
+  STIRRING_SLOW,
+  SETTLING,
+  ACTIVATE_PUMP_3,
+  WAIT_STATE,
+  CLEAN_SOLAR_PANEL,
+  COMPLETE_CYCLE
+};
+
+SystemState currentState = IDLE;
+unsigned long stateStartTime = 0;
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Initialize relays (active LOW)
+  pinMode(WATER_PUMP_1, OUTPUT);
+  pinMode(WATER_PUMP_2, OUTPUT);
+  pinMode(WATER_PUMP_3, OUTPUT);
+  digitalWrite(WATER_PUMP_1, HIGH); // Turn off initially
+  digitalWrite(WATER_PUMP_2, HIGH); // Turn off initially
+  digitalWrite(WATER_PUMP_3, HIGH); // Turn off initially
+  
+  // Initialize motor driver pins
+  pinMode(DC_MOTOR_PIN_1, OUTPUT);
+  pinMode(DC_MOTOR_PIN_2, OUTPUT);
+  pinMode(DC_MOTOR_ENA, OUTPUT);
+  
+  // Initialize servo
+  ESP32PWM::allocateTimer(0);
+  
+  servo1.setPeriodHertz(50);    // Standard 50hz servo
+  
+  servo1.attach(SERVO_1_PIN, 500, 2400);
+  
+  servo1.write(SERVO_1_CLOSED);
+  
+  delay(2000); // Give servo time to initialize
+  
+  // Wait for 5 seconds as requested
+  Serial.println("Waiting for 5 seconds...");
+  delay(5000);
+  
+  Serial.println("System initialized and ready to start treatment cycle");
+  currentState = IDLE;
+  stateStartTime = millis(); // Initialize state start time
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+  
+  // State machine for non-blocking sequence control
+  switch (currentState) {
+    case IDLE:
+      if (currentTime - stateStartTime == 0) {
+        Serial.println("Starting water treatment cycle");
+      }
+      
+      if (currentTime - stateStartTime >= 1000) { // Short delay before starting cycle
+        currentState = INTAKE_WATER;
+        stateStartTime = currentTime;
+      }
+      break;
+      
+    case INTAKE_WATER:
+      if (currentTime - stateStartTime == 0) {
+        // Just entered this state
+        Serial.println("Step 1: Intaking water");
+        digitalWrite(WATER_PUMP_1, LOW);  // Turn on pump 1
+      }
+      
+      if (currentTime - stateStartTime >= WATER_INTAKE_TIME) {
+        digitalWrite(WATER_PUMP_1, HIGH); // Turn off pump 1
+        currentState = DISPENSE_COAGULANT;
+        stateStartTime = currentTime;
+      }
+      break;
+      
+    case DISPENSE_COAGULANT:
+      if (currentTime - stateStartTime == 0) {
+        // Just entered this state
+        Serial.println("Step 2: Dispensing coagulant");
+        servo1.write(SERVO_1_OPEN);     // Open servo 1
+      }
+      
+      if (currentTime - stateStartTime >= COAGULANT_DISPENSE_TIME) {
+        servo1.write(SERVO_1_CLOSED);   // Close servo 1
+        currentState = STIRRING_FAST;
+        stateStartTime = currentTime;
+      }
+      break;
+      
+    case STIRRING_FAST:
+      if (currentTime - stateStartTime == 0) {
+        // Just entered this state
+        Serial.println("Step 3: Stirring at fast speed");
+        setMotorSpeed(FAST_SPEED);
+      }
+      
+      if (currentTime - stateStartTime >= STIRRING_FAST_TIME) {
+        currentState = STIRRING_SLOW;
+        stateStartTime = currentTime;
+      }
+      break;
+      
+    case STIRRING_SLOW:
+      if (currentTime - stateStartTime == 0) {
+        // Just entered this state
+        Serial.println("Step 4: Stirring at slow speed");
+        setMotorSpeed(SLOW_SPEED);
+      }
+      
+      if (currentTime - stateStartTime >= STIRRING_SLOW_TIME) {
+        stopMotor();
+        currentState = SETTLING;
+        stateStartTime = currentTime;
+      }
+      break;
+      
+    case SETTLING:
+      if (currentTime - stateStartTime == 0) {
+        // Just entered this state
+        Serial.println("Step 5: Stopping stirrer and allowing settling");
+      }
+      
+      if (currentTime - stateStartTime >= SETTLING_TIME) {
+        currentState = ACTIVATE_PUMP_3;
+        stateStartTime = currentTime;
+      }
+      break;
+      
+    case ACTIVATE_PUMP_3:
+      if (currentTime - stateStartTime == 0) {
+        // Just entered this state
+        Serial.println("Step 6: Activating water pump 3 (replaced faucet)");
+        digitalWrite(WATER_PUMP_3, LOW); // Turn on pump 3
+      }
+      
+      if (currentTime - stateStartTime >= WATER_PUMP_3_ON_TIME) {
+        digitalWrite(WATER_PUMP_3, HIGH); // Turn off pump 3
+        currentState = WAIT_STATE;
+        stateStartTime = currentTime;
+      }
+      break;
+      
+    case WAIT_STATE:
+      if (currentTime - stateStartTime == 0) {
+        // Just entered this state
+        Serial.println("Step 7: Waiting state (replaced closed faucet)");
+      }
+      
+      if (currentTime - stateStartTime >= WAITING_TIME) {
+        currentState = CLEAN_SOLAR_PANEL;
+        stateStartTime = currentTime;
+      }
+      break;
+      
+    case CLEAN_SOLAR_PANEL:
+      if (currentTime - stateStartTime == 0) {
+        // Just entered this state
+        Serial.println("Step 8: Cleaning solar panel");
+        digitalWrite(WATER_PUMP_2, LOW);  // Turn on pump 2
+      }
+      
+      if (currentTime - stateStartTime >= SOLAR_PANEL_CLEANING_TIME) {
+        digitalWrite(WATER_PUMP_2, HIGH); // Turn off pump 2
+        currentState = COMPLETE_CYCLE;
+        stateStartTime = currentTime;
+      }
+      break;
+      
+    case COMPLETE_CYCLE:
+      if (currentTime - stateStartTime == 0) {
+        // Just entered this state
+        Serial.println("Water treatment cycle completed");
+        Serial.println("Waiting for next cycle...");
+      }
+      
+      if (currentTime - stateStartTime >= CYCLE_WAIT_TIME) {
+        currentState = IDLE; // Restart the cycle
+        stateStartTime = currentTime;
+      }
+      break;
+  }
+}
+
+void setMotorSpeed(int speed) {
+  // Using the ENA pin for speed control via PWM
+  digitalWrite(DC_MOTOR_PIN_1, HIGH);
+  digitalWrite(DC_MOTOR_PIN_2, LOW);
+  analogWrite(DC_MOTOR_ENA, speed);
+}
+
+void stopMotor() {
+  // Stop the motor by setting enable pin to 0
+  analogWrite(DC_MOTOR_ENA, 0);
+  // Or alternatively, set both direction pins to LOW
+  digitalWrite(DC_MOTOR_PIN_1, LOW);
+  digitalWrite(DC_MOTOR_PIN_2, LOW);
+}
